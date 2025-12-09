@@ -1,0 +1,518 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8" />
+  <title>ALC-Guard Dashboard</title>
+  <script src="https://cdn.jsdelivr.net/npm/chart.js"></script>
+  <style>
+    * { box-sizing: border-box; }
+    
+    body {
+      font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      margin: 20px;
+      background: #f5f5f5;
+    }
+
+    .cards {
+      display: flex;
+      gap: 16px;
+      margin-bottom: 20px;
+      width: 100%;
+      max-width: 1000px;
+      margin-left: auto;
+      margin-right: auto;
+      flex-wrap: wrap;
+      justify-content: space-between;
+    }
+
+    .card {
+      flex: 1;
+      min-width: 140px;              
+      background: #ffffff;
+      border-radius: 18px;
+      padding: 14px 18px;
+      box-shadow:
+        0 8px 16px rgba(15, 23, 42, 0.08),
+        0 0 0 1px rgba(148, 163, 184, 0.08);
+      display: flex;
+      flex-direction: column;
+      justify-content: space-between;
+      align-items: center;
+      transition: transform 0.15s ease, box-shadow 0.15s ease;
+    }
+
+    .card:hover {
+      transform: translateY(-2px);
+      box-shadow:
+        0 12px 24px rgba(15, 23, 42, 0.12),
+        0 0 0 1px rgba(148, 163, 184, 0.16);
+    }
+
+    .card-title {
+      font-size: 11px;
+      font-weight: 600;
+      text-transform: uppercase;
+      letter-spacing: 0.08em;
+      color: #6b7280;
+      text-align: center;
+      margin-bottom: 8px;
+    }
+
+    .card-value {
+      font-size: 22px;
+      font-weight: 600;   
+      text-align: center;
+      width: 100%;
+      margin-top: 4px;
+    }
+
+    .chart-card {
+      width: 100%;
+      max-width: 1000px;
+      margin: 0 auto 24px;
+      background: white;
+      padding: 20px;
+      border-radius: 12px;
+      box-shadow: 0 2px 6px rgba(0,0,0,0.06);
+    }
+  </style>
+</head>
+
+<body>
+  <h2>ALC-Guard – Daily Intake Dashboard</h2>
+
+  <!-- Risk banner (shows 1-hour risk level) -->
+  <div id="alert-bar" 
+       style="display:none; 
+              max-width:800px; 
+              margin:12px auto 20px; 
+              padding:12px 16px; 
+              border-radius:10px; 
+              font-weight:600;
+              text-align:center;">
+  </div>
+
+  <!-- Top summary cards -->
+  <div class="cards">
+
+    <div class="card">
+      <div class="card-title">Total beer volume (ml)</div>
+      <div class="card-value" id="total-today">– ml</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Alcohol events</div>
+      <div class="card-value" id="num-drink">–</div>
+    </div>
+
+    <div class="card">
+      <div class="card-title">Small<br>sips</div>
+      <div class="card-value" id="num-sip">–</div>
+    </div>
+
+    <!-- Total units converted from ml -->
+    <div class="card">
+      <div class="card-title">Total units today</div>
+      <div class="card-value" id="total-units">– units</div>
+    </div>
+
+    <!-- Number of refills rather than total refill volume -->
+    <div class="card">
+      <div class="card-title">Refill<br>count</div>
+      <div class="card-value" id="refill-count">–</div>
+    </div>
+
+  </div>
+
+  <!-- Chart 1: volume per event -->
+  <div class="chart-card">
+    <h3>Alcohol volume per event</h3>
+    <canvas id="drinkChart" style="max-height: 350px;"></canvas>
+  </div>
+
+  <!-- Chart 2: cumulative intake curve -->
+  <div class="chart-card">
+    <h3>Cumulative alcohol volume</h3>
+    <canvas id="cumChart" style="max-height: 350px;"></canvas>
+  </div>
+
+  <!-- Chart 3: hourly distribution -->
+  <div class="chart-card">
+    <h3>Hourly alcohol pattern (today)</h3>
+    <canvas id="hourlyChart" style="max-height: 350px;"></canvas>
+  </div>
+
+  <!-- Chart 4: time gaps between events -->
+  <div class="chart-card">
+    <h3>Intervals between intake events</h3>
+    <canvas id="intervalChart" style="max-height: 350px;"></canvas>
+  </div>
+
+  <!-- Chart 5: temperature vs. volume -->
+  <div class="chart-card">
+    <h3>Temperature vs intake volume</h3>
+    <canvas id="tempChart" style="max-height: 350px;"></canvas>
+  </div>
+
+  <p id="gap-stats" style="text-align:center; color:#555; margin-top:-8px; margin-bottom:24px;">
+  </p>
+
+  <!-- Daily limit progress card -->
+  <div class="card" id="goal-card" style="max-width: 800px; margin: 0 auto;">
+    <div class="card-title">Daily alcohol limit</div>
+    <div class="card-value" id="goal-progress">–</div>
+  </div>
+
+<script>
+let drinkChartInstance = null;
+let cumChartInstance = null;
+let hourlyChartInstance = null;
+let intervalChartInstance = null;
+let tempChartInstance = null;
+
+// ALC-Guard color palette
+
+// Bar colors for different event types
+const DRINK_COLOR = "rgba(255, 171, 64, 0.95)";    // main drink bar
+const SIP_COLOR   = "rgba(255, 204, 128, 0.95)";   // small sip bar
+
+// Line / bar colors for each secondary chart
+const COLOR_CUMULATIVE = "rgba(230, 126, 34, 0.9)";
+const COLOR_HOURLY     = "rgba(205, 102, 0, 0.85)";
+const COLOR_INTERVAL   = "rgba(191, 87, 0, 0.85)";
+const COLOR_TEMP       = "rgba(255, 195, 113, 0.6)";
+
+function timeToMinutes(t) {
+  if (!t) return 0;
+  const parts = String(t).trim().split(':');
+  if (parts.length < 2) return 0;
+  return parseInt(parts[0]) * 60 + parseInt(parts[1]);
+}
+
+// Main data loader: fetches /day_data.json and refreshes all charts.
+async function loadData() {
+  if (typeof Chart === 'undefined') return;
+
+  try {
+    const resp = await fetch('day_data.json?ts=' + Date.now());
+    const data = await resp.json();
+
+    const allEvents = data.events || [];
+
+    const drinkEvents = allEvents.filter(e =>
+      e.type === 'drink' || e.type === 'small_sip'
+    );
+
+    const goalMl = data.goal_ml || 0;
+    const totalMl  = data.total_today || 0;
+
+    // Unit calculation (simple beer model, ABV=5%)
+    const units_per_ml = 0.05 / 10.0;
+    const total_units = (data.total_today || 0) * units_per_ml;
+    const goalEl = document.getElementById('goal-progress');
+    const goalCard = document.getElementById('goal-card');
+
+    document.getElementById('total-units').textContent =
+      total_units.toFixed(2) + " units";
+
+    // Summary cards 
+    document.getElementById('total-today').textContent =
+      data.total_today.toFixed(1) + ' ml';
+    document.getElementById('num-drink').textContent = data.num_drink;
+    document.getElementById('num-sip').textContent = data.num_sip;
+    document.getElementById('refill-count').textContent =
+      data.refill_count || 0;
+    
+    // Daily limit progress (both text and background color) 
+    if (goalMl > 0) {
+      const used = totalMl;
+      const ratioUsed = used / goalMl;
+      const pctUsed = Math.min(Math.round(ratioUsed * 100), 100);
+
+      //Hhow much of the limit has been consumed
+      if (ratioUsed <= 1) {
+        goalEl.textContent = `${pctUsed}% consumed (${used.toFixed(0)} ml of ${goalMl} ml)`;
+      } else {
+        const exceeded = (used - goalMl).toFixed(0);
+        goalEl.textContent = `Limit exceeded by ${exceeded} ml (100% consumed)`;
+      }
+
+      // Card color: green to amber to red
+      let cardBg = "#e7f7ec";     // safe
+      let cardColor = "#166534";
+
+      if (ratioUsed >= 0.5 && ratioUsed < 1.0) {
+        cardBg = "#fff4e5";      // warning
+        cardColor = "#aa5b00";
+      }
+      if (ratioUsed >= 1.0) {
+        cardBg = "#fde8e8";      // danger
+        cardColor = "#b91c1c";
+      }
+
+      if (goalCard) {
+        goalCard.style.backgroundColor = cardBg;
+        goalCard.style.color = cardColor;
+      }
+
+      // Subtle page-background shift with risk level
+      const body = document.body;
+      if (body) {
+        if (ratioUsed < 0.5) {
+          body.style.backgroundColor = "#f5f5f5";
+        } else if (ratioUsed < 1.0) {
+          body.style.backgroundColor = "#fffaf0";
+        } else {
+          body.style.backgroundColor = "#fff5f5";
+        }
+      }
+
+    } else {
+      goalEl.textContent = "–";
+    }
+
+    // Chart 1: volume per event
+    const labels = drinkEvents.map((e, i) => `#${i+1} ${e.time}`);
+    const volumes = drinkEvents.map(e => e.volume);
+    const colors = drinkEvents.map(e =>
+      e.type === "drink" ? DRINK_COLOR : SIP_COLOR
+    );
+
+    const ctx1 = document.getElementById('drinkChart').getContext('2d');
+    if (drinkChartInstance) drinkChartInstance.destroy();
+
+    drinkChartInstance = new Chart(ctx1, {
+      type: 'bar',
+      data: {
+        labels,
+        datasets: [{
+          label: "Alcohol (ml)",
+          data: volumes,
+          backgroundColor: colors
+        }]
+      },
+      options: {
+        scales: { y: { beginAtZero: true } },
+        plugins: { legend: { display: false } }
+      }
+    });
+
+    // Chart 2: cumulative volume
+    let cum = [];
+    let sum = 0;
+    for (const v of volumes) {
+      sum += v;
+      cum.push(sum);
+    }
+
+    const ctx2 = document.getElementById('cumChart').getContext('2d');
+    if (cumChartInstance) cumChartInstance.destroy();
+
+    cumChartInstance = new Chart(ctx2, {
+      type: 'line',
+      data: {
+        labels,
+        datasets: [{
+          label: "Cumulative (ml)",
+          data: cum,
+          borderColor: COLOR_CUMULATIVE,
+          backgroundColor: COLOR_CUMULATIVE,
+          fill: false,
+          tension: 0.2
+        }]
+      },
+      options: { scales: { y: { beginAtZero: true } } }
+    });
+
+    // Chart 3: hourly pattern
+    const hourData = new Array(24).fill(0);
+    drinkEvents.forEach(e => {
+      const h = parseInt(e.time.split(':')[0]);
+      if (h >= 0 && h < 24) hourData[h] += e.volume;
+    });
+
+    const ctx3 = document.getElementById('hourlyChart').getContext('2d');
+    if (hourlyChartInstance) hourlyChartInstance.destroy();
+
+    hourlyChartInstance = new Chart(ctx3, {
+      type: 'bar',
+      data: {
+        labels: Array.from({length:24}, (_,i)=> `${i}:00`),
+        datasets: [{
+          label: "Hourly alcohol (ml)",
+          data: hourData,
+          backgroundColor: COLOR_CUMULATIVE
+        }]
+      },
+      options: {
+        scales: { y: { beginAtZero: true } },
+        plugins:{ legend:{ display:false } }
+      }
+    });
+
+    // Chart 4: intervals between events
+    const evWithTime = drinkEvents.filter(e => e.time && e.time.includes(':'));
+
+    const ctx4 = document.getElementById('intervalChart').getContext('2d');
+    if (intervalChartInstance) intervalChartInstance.destroy();
+
+    if (evWithTime.length < 2) {
+      // Not enough events to compute gaps - show an empty placeholder chart
+      intervalChartInstance = new Chart(ctx4, {
+        type: 'bar',
+        data: {
+          labels: [],
+          datasets: [{
+            label: "",
+            data: []
+          }]
+        },
+        options: {
+          plugins: {
+            title: {
+              display: true,
+              text: "Not enough events"
+            },
+            legend: {
+              display: false
+            }
+          },
+          scales: {
+            x: { display: false },
+            y: { display: false }
+          }
+        }
+      });
+    } else {
+      const sorted = [...evWithTime].sort((a,b)=>
+        timeToMinutes(a.time) - timeToMinutes(b.time)
+      );
+      const intervalLabels = [];
+      const intervals = [];
+      for (let i = 1; i < sorted.length; i++) {
+        let diff = timeToMinutes(sorted[i].time) - timeToMinutes(sorted[i-1].time);
+        if (diff < 0) diff += 1440;   // handle midnight wrap-around
+        intervals.push(diff);
+        intervalLabels.push(`${sorted[i-1].time} → ${sorted[i].time}`);
+      }
+
+      intervalChartInstance = new Chart(ctx4, {
+        type: 'bar',
+        data: {
+          labels: intervalLabels,
+          datasets: [{
+            label: "Interval (min)",
+            data: intervals,
+            backgroundColor: COLOR_CUMULATIVE,
+            borderRadius: 4
+          }]
+        },
+        options:{
+          scales:{ y:{ beginAtZero:true } },
+          plugins:{ legend:{ display:false } }
+        }
+      });
+    }
+
+    // temperature vs. volume (scatter)
+    const tempData = drinkEvents
+      .filter(e => e.temp != null && !Number.isNaN(e.temp))
+      .map(e => ({x:e.temp, y:e.volume}));
+
+    const ctx5 = document.getElementById('tempChart').getContext('2d');
+    if (tempChartInstance) tempChartInstance.destroy();
+
+    tempChartInstance = new Chart(ctx5, {
+      type: 'scatter',
+      data: {
+        datasets: [{
+          label: "Volume vs Temperature",
+          data: tempData,
+          pointRadius: 5,
+          backgroundColor: COLOR_CUMULATIVE
+        }]
+      },
+      options:{
+        scales:{
+          x:{ type:'linear', title:{ display:true, text:'Temperature (°C)' } },
+          y:{ beginAtZero:true, title:{ display:true, text:'Volume (ml)' } }
+        }
+      }
+    });
+
+    // Text summary of longest / last gap
+    let longest = 0;
+    let last = 0;
+    const sortedForGap = [...evWithTime].sort((a,b)=>
+      timeToMinutes(a.time) - timeToMinutes(b.time)
+    );
+
+    if (sortedForGap.length >= 2) {
+      let gaps = [];
+      for (let i = 1; i < sortedForGap.length; i++) {
+        let diff = timeToMinutes(sortedForGap[i].time) -
+                   timeToMinutes(sortedForGap[i-1].time);
+        if (diff < 0) diff += 1440;
+        gaps.push(diff);
+      }
+      longest = Math.max(...gaps);
+      last = gaps[gaps.length - 1];
+    }
+
+    document.getElementById('gap-stats').textContent =
+      `Longest gap: ${longest} min · Last gap: ${last} min`;
+
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+// Poll one-hour risk status for the top banner
+async function checkStatus() {
+  try {
+    const resp = await fetch('/api/status?ts=' + Date.now());
+    const s = await resp.json();
+    const bar = document.getElementById('alert-bar');
+    if (!bar) return;
+
+    if (!s || typeof s.need_alert === 'undefined') {
+      bar.style.display = 'none';
+      return;
+    }
+
+    const units = (s.last_hour_units || 0).toFixed(2);
+    bar.style.display = 'block';
+
+    if (!s.need_alert) {
+      // Low risk: green banner
+      bar.style.background = '#e7f7ec';
+      bar.style.color = '#166534';
+      bar.textContent = `ALC-Guard: ${units} units in last hour (low risk).`;
+
+    } else if (s.risk_level === 'warning') {
+      // Medium risk
+      bar.style.background = '#fff4e5';
+      bar.style.color = '#aa5b00';
+      bar.textContent = `Warning: ${units} units in last hour – consider slowing down.`;
+
+    } else {
+      // High risk
+      bar.style.background = '#fde8e8';
+      bar.style.color = '#b91c1c';
+      bar.textContent = `Danger: ${units} units in last hour – high-risk intake detected.`;
+    }
+
+  } catch (err) {
+    console.error(err);
+  }
+}
+
+// Initial load and periodic refresh
+loadData();
+checkStatus();
+setInterval(loadData, 10000);
+setInterval(checkStatus, 10000);
+</script>
+
+</body>
+</html>
